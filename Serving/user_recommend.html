@@ -1,0 +1,169 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>User Recommendation</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            margin: 20px;
+        }
+        .container {
+            max-width: 400px;
+            margin: auto;
+        }
+        input, button {
+            width: 100%;
+            padding: 10px;
+            margin: 10px 0;
+            font-size: 16px;
+        }
+        #results {
+            margin-top: 20px;
+            padding: 10px;
+            border: 1px solid #ccc;
+            background-color: #f9f9f9;
+        }
+        ul {
+            list-style-type: none;
+            padding: 0;
+        }
+
+        li {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 10px;
+            margin-bottom: 10px;
+            border: 1px solid #ddd;
+            border-radius: 5px;
+            background-color: #fff;
+            box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+            transition: transform 0.2s, box-shadow 0.2s;
+        }
+
+        li:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 4px 8px rgba(0, 0, 0, 0.2);
+        }
+
+        li span {
+            font-size: 16px;
+            font-weight: bold;
+            color: #333;
+        }
+
+        li button {
+    
+            color: white;
+            border: none;
+            border-radius: 3px;
+            padding: 5px 10px;
+            font-size: 14px;
+            cursor: pointer;
+            transition: background-color 0.3s;
+        }
+
+        li button:hover {
+            background-color: #e60000;
+        }
+
+        li button:focus {
+            outline: none;
+            box-shadow: 0 0 3px 2px rgba(255, 77, 77, 0.5);
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>User Recommendation</h1>
+        <form id="recommendationForm">
+            <label for="user_id">Enter User ID:</label>
+            <input type="text" id="user_id" name="user_id" placeholder="Type User ID here" required>
+            <button type="submit">Get Recommendations</button>
+        </form>
+        <div id="results"></div>
+    </div>
+
+    <script>
+
+        function sendFeedback(newsId, userId, feedback) {
+            fetch('http://127.0.0.1:5000/feedback', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({ news_id: newsId, user_id: userId, feedback: feedback })
+            })
+            .then(response => {
+                if (!response.ok) {
+                    throw new Error('Failed to send feedback');
+                }
+                return response.json();
+            })
+            .then(data => {
+                alert('Feedback submitted successfully!');
+            })
+            .catch(error => {
+                alert(`Error submitting feedback: ${error.message}`);
+            });
+        }
+        document.getElementById('recommendationForm').addEventListener('submit', function(event) {
+            event.preventDefault();
+            const userId = document.getElementById('user_id').value;
+            const resultsDiv = document.getElementById('results');
+
+            // Show loading message
+            resultsDiv.innerHTML = `<p>Fetching recommendations for User ID: <strong>${userId}</strong>...</p>`;
+
+            // Make POST API call
+            fetch('http://127.0.0.1:5000/infer', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({ user_id: userId })
+            })
+            .then(response => {
+            if (!response.ok) {
+                throw new Error('Network response was not ok');
+            }
+            return response.json();
+            })
+            .then(data => {
+            // Display recommendations
+            if (data.recommendations && data.recommendations.length > 0) {
+                const recommendationsList = data.recommendations.map(item => {
+                    const newsId = item.news_id || 'Unknown ID';
+                    const title = item.title || 'No Title Available';
+                    return `<li><strong>${newsId}</strong>: ${title}</li>`;
+                }).join('');
+                resultsDiv.innerHTML = `
+                <h3>Recommendations for User ID: ${userId}</h3>
+                <ul class="recommendations-list">
+                    ${data.recommendations.map(item => {
+                        const newsId = item.news_id || 'Unknown ID';
+                        const title = item.title || 'No Title Available';
+                        return `
+                            <li style="display: flex; justify-content: space-between; align-items: center;">
+                                <span><strong>${title}</strong></span>
+                                <button onclick="sendFeedback('${newsId}', '${userId}', 1)" style="margin-left: 10px;">👍</button>
+                                <button onclick="sendFeedback('${newsId}', '${userId}', 0)" style="margin-left: 10px;">🚩</button>
+                            </li>
+                        `;
+                    }).join('')}
+                </ul>
+                `;
+            } else {
+                resultsDiv.innerHTML = `<p>No recommendations found for User ID: <strong>${userId}</strong>.</p>`;
+            }
+            })
+            .catch(error => {
+            resultsDiv.innerHTML = `<p>Error fetching recommendations: ${error.message}</p>`;
+            });
+        });
+        
+    </script>
+</body>
+</html>

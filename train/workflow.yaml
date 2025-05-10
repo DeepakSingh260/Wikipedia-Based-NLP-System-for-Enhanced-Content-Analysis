@@ -1,0 +1,30 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Workflow
+metadata:
+  generateName: newsrec-pipeline-
+spec:
+  entrypoint: run-newsrec-pipeline
+  templates:
+    - name: run-newsrec-pipeline
+      container:
+        image: <your-docker-image>
+        command: ["python"]
+        args: ["/app/flow.py"]
+        env:
+          - name: MLFLOW_TRACKING_URI
+            value: "http://mlflow-service:5000"
+          # Add any other environment variables you need here
+        resources:
+          requests:
+            memory: "8Gi"
+            cpu: "2"
+          limits:
+            memory: "16Gi"
+            cpu: "4"
+        volumeMounts:
+          - name: dataset-volume
+            mountPath: /app/Dataset
+      volumes:
+        - name: dataset-volume
+          persistentVolumeClaim:
+            claimName: mind-dataset-pvc

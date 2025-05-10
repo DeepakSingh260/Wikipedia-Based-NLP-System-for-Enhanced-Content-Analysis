@@ -1,0 +1,4 @@
+# Ignore the following directories related to MIND datasets
+MINDlarge_train/
+MINDlarge_dev/
+MINDlarge_test/
