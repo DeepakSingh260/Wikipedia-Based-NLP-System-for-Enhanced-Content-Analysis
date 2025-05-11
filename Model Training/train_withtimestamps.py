@@ -31,7 +31,7 @@ def setup_dataset(args):
     if not os.path.exists('MIND_large/train/behaviors.tsv'):
         logger.info("Extracting MIND large training set...")
         try:
-            with zipfile.ZipFile('MINDlarge_train.zip') as zip_ref:
+            with zipfile.ZipFile('/mnt/MINDlarge_train.zip') as zip_ref:
                 zip_ref.extractall('MIND_large/train')
             logger.info("MIND large training set extracted.")
         except zipfile.BadZipFile as e:
@@ -41,7 +41,7 @@ def setup_dataset(args):
     if not os.path.exists('MIND_large/dev/behaviors.tsv'):
         logger.info("Extracting MIND large validation set...")
         try:
-            with zipfile.ZipFile('MINDlarge_dev.zip') as zip_ref:
+            with zipfile.ZipFile('/mnt/MINDlarge_dev.zip') as zip_ref:
                 zip_ref.extractall('MIND_large/dev')
             logger.info("MIND large validation set extracted.")
         except zipfile.BadZipFile as e:
@@ -51,7 +51,7 @@ def setup_dataset(args):
     if not os.path.exists('MIND_large/test/behaviors.tsv'):
         logger.info("Extracting MIND large test set...")
         try:
-            with zipfile.ZipFile('MINDlarge_test.zip') as zip_ref:
+            with zipfile.ZipFile('/mnt/MINDlarge_test.zip') as zip_ref:
                 zip_ref.extractall('MIND_large/test')
             logger.info("MIND large test set extracted.")
         except zipfile.BadZipFile as e:
