@@ -1,0 +1,171 @@
+name: persist_block
+services:
+  minio:
+    image: minio/minio
+    container_name: minio
+    restart: always
+    expose:
+      - "9000"
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    environment:
+      MINIO_ROOT_USER: "your-access-key"
+      MINIO_ROOT_PASSWORD: "your-secret-key"
+      MINIO_PROMETHEUS_AUTH_TYPE: "public"
+    healthcheck:
+      test: timeout 5s bash -c ':> /dev/tcp/127.0.0.1/9000' || exit 1
+      interval: 1s
+      timeout: 10s
+      retries: 5
+    command: server /data --console-address ":9001"
+    volumes:
+      - /mnt/block/minio_data:/data
+
+  minio-create-bucket:
+    image: minio/mc
+    container_name: minio-create-bucket
+    depends_on:
+      minio:
+        condition: service_healthy
+    entrypoint: >
+      /bin/sh -c "
+      mc alias set minio http://minio:9000 your-access-key your-secret-key &&
+      if ! mc ls minio/mlflow-artifacts; then
+        mc mb minio/mlflow-artifacts &&
+        echo 'Bucket mlflow-artifacts created'
+      else
+        echo 'Bucket mlflow-artifacts already exists';
+      fi"
+
+  postgres:
+    image: postgres:latest
+    container_name: postgres
+    restart: always
+    environment:
+      POSTGRES_USER: user
+      POSTGRES_PASSWORD: password
+      POSTGRES_DB: mlflowdb
+    ports:
+      - "5432:5432"
+    volumes:
+      - /mnt/block/postgres_data:/var/lib/postgresql/data
+
+  # PostgreSQL exporter for Prometheus
+  postgres-exporter:
+    image: prometheuscommunity/postgres-exporter:latest
+    container_name: postgres-exporter
+    restart: always
+    environment:
+      DATA_SOURCE_NAME: "postgresql://user:password@postgres:5432/mlflowdb?sslmode=disable"
+    ports:
+      - "9187:9187"
+    depends_on:
+      - postgres
+
+  mlflow:
+    image: ghcr.io/mlflow/mlflow:v2.20.2
+    container_name: mlflow
+    restart: always
+    depends_on:
+      - minio
+      - postgres
+      - minio-create-bucket
+    environment:
+      MLFLOW_TRACKING_URI: http://0.0.0.0:8000
+      MLFLOW_S3_ENDPOINT_URL: http://minio:9000
+      AWS_ACCESS_KEY_ID: "your-access-key"
+      AWS_SECRET_ACCESS_KEY: "your-secret-key"
+    ports:
+      - "8000:8000"
+    command: >
+      /bin/sh -c "pip install psycopg2-binary boto3 &&
+      mlflow server --backend-store-uri postgresql://user:password@postgres/mlflowdb 
+      --artifacts-destination s3://mlflow-artifacts/ --serve-artifacts --host 0.0.0.0 --port 8000"
+
+  jupyter:
+    image: quay.io/jupyter/pytorch-notebook:pytorch-2.5.1
+    container_name: jupyter
+    ports:
+      - "8888:8888"
+    shm_size: 8g
+    environment:
+      - MLFLOW_TRACKING_URI=http://${HOST_IP}:8000/
+      - MIND_DATA_DIR=/mnt/MIND
+    volumes:
+      - ~/your-project-workspace:/home/jovyan/work/
+      - type: bind
+        source: /mnt/object
+        target: /mnt/MIND
+        read_only: true
+    command: >
+      bash -c "python3 -m pip install mlflow && start-notebook.sh"
+
+  # Node exporter for host metrics
+  node-exporter:
+    image: prom/node-exporter:latest
+    container_name: node-exporter
+    restart: always
+    volumes:
+      - /proc:/host/proc:ro
+      - /sys:/host/sys:ro
+      - /:/rootfs:ro
+    command:
+      - "--path.procfs=/host/proc"
+      - "--path.rootfs=/rootfs"
+      - "--path.sysfs=/host/sys"
+      - "--collector.filesystem.mount-points-exclude=^/(sys|proc|dev|host|etc)($$|/)"
+    ports:
+      - "9100:9100"
+
+  # cAdvisor for container metrics
+  cadvisor:
+    image: gcr.io/cadvisor/cadvisor:latest
+    container_name: cadvisor
+    restart: always
+    volumes:
+      - /:/rootfs:ro
+      - /var/run:/var/run:ro
+      - /sys:/sys:ro
+      - /var/lib/docker/:/var/lib/docker:ro
+      - /dev/disk/:/dev/disk:ro
+    ports:
+      - "8080:8080"
+    privileged: true
+
+  # Prometheus for metrics collection
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: prometheus
+    restart: always
+    ports:
+      - "9090:9090"
+    volumes:
+      - /mnt/block/prometheus_data:/prometheus
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--storage.tsdb.path=/prometheus"
+      - "--web.console.libraries=/etc/prometheus/console_libraries"
+      - "--web.console.templates=/etc/prometheus/consoles"
+      - "--web.enable-lifecycle"
+    depends_on:
+      - cadvisor
+      - node-exporter
+      - postgres-exporter
+
+  # Grafana for visualization
+  grafana:
+    image: grafana/grafana:latest
+    container_name: grafana
+    restart: always
+    ports:
+      - "3000:3000"
+    volumes:
+      - /mnt/block/grafana_data:/var/lib/grafana
+    environment:
+      - GF_SECURITY_ADMIN_USER=admin
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+      - GF_USERS_ALLOW_SIGN_UP=false
+    depends_on:
+      - prometheus

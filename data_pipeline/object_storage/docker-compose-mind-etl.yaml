@@ -1,0 +1,134 @@
+services:
+  # Download the MIND dataset zip files
+  download-data:
+    container_name: etl_download_data
+    image: python:3.11
+    user: root
+    volumes:
+      - mind:/data
+    working_dir: /data
+    command:
+      - bash
+      - -c
+      - |
+        set -e
+
+        echo "Downloading MINDlarge_train.zip from NYU Box storage..."
+        curl -L "https://nyu.box.com/shared/static/s2kc1r7bqgvncd2uxdnj5tc42ffi2m3u.zip" -o MINDlarge_train.zip
+
+        if [ ! -s "MINDlarge_train.zip" ]; then
+          echo "ERROR: Download failed for MINDlarge_train.zip - file is empty or does not exist"
+        else
+          du -h MINDlarge_train.zip
+          echo "Successfully downloaded MINDlarge_train.zip"
+        fi
+
+        echo "Downloading MINDlarge_dev.zip from NYU Box storage..."
+        curl -L "https://nyu.box.com/shared/static/qe4iwixr67kost4cqxeyk249q1dydf0k.zip" -o MINDlarge_dev.zip
+
+        if [ ! -s "MINDlarge_dev.zip" ]; then
+          echo "ERROR: Download failed for MINDlarge_dev.zip - file is empty or does not exist"
+        else
+          du -h MINDlarge_dev.zip
+          echo "Successfully downloaded MINDlarge_dev.zip"
+        fi
+
+        echo "Downloading MINDlarge_test.zip from NYU Box storage..."
+        curl -L "https://nyu.box.com/shared/static/p8aebme8g0k5urbebwpsubrk6cpc7j0x.zip" -o MINDlarge_test.zip
+
+        if [ ! -s "MINDlarge_test.zip" ]; then
+          echo "ERROR: Download failed for MINDlarge_test.zip - file is empty or does not exist"
+        else
+          du -h MINDlarge_test.zip
+          echo "Successfully downloaded MINDlarge_test.zip"
+        fi
+
+        echo "Listing zip files in data directory:"
+        ls -lah /data/*.zip || echo "No zip files found"
+
+  # Transform the data: unzip files and organize into training, validation, and testing folders
+  transform-data:
+    container_name: etl_transform_data
+    image: python:3.11
+    user: root
+    volumes:
+      - mind:/data
+    working_dir: /data
+    command:
+      - bash
+      - -c
+      - |
+        set -e
+
+        echo "Creating directory structure for MIND dataset..."
+        mkdir -p training validation testing
+
+        # Extract training data
+        if [ -f "MINDlarge_train.zip" ]; then
+          echo "Extracting MINDlarge_train.zip to training directory..."
+          unzip -q -o "MINDlarge_train.zip" -d "training"
+          echo "Successfully extracted training data"
+          echo "Sample of files in training directory:"
+          ls -la "training" | head -n 10
+        else
+          echo "ERROR: MINDlarge_train.zip not found"
+        fi
+
+        # Extract validation data (dev set)
+        if [ -f "MINDlarge_dev.zip" ]; then
+          echo "Extracting MINDlarge_dev.zip to validation directory..."
+          unzip -q -o "MINDlarge_dev.zip" -d "validation"
+          echo "Successfully extracted validation data"
+          echo "Sample of files in validation directory:"
+          ls -la "validation" | head -n 10
+        else
+          echo "ERROR: MINDlarge_dev.zip not found"
+        fi
+
+        # Extract testing data
+        if [ -f "MINDlarge_test.zip" ]; then
+          echo "Extracting MINDlarge_test.zip to testing directory..."
+          unzip -q -o "MINDlarge_test.zip" -d "testing"
+          echo "Successfully extracted testing data"
+          echo "Sample of files in testing directory:"
+          ls -la "testing" | head -n 10
+        else
+          echo "ERROR: MINDlarge_test.zip not found"
+        fi
+
+        echo "Transformation complete - MIND dataset is organized into training, validation, and testing directories"
+        echo "Directory structure:"
+        find . -type d -maxdepth 2 | sort
+
+  # Load the data to object storage
+  load-data:
+    container_name: etl_load_data
+    image: rclone/rclone:latest
+    volumes:
+      - mind:/data
+      - ~/.config/rclone/rclone.conf:/root/.config/rclone/rclone.conf:ro
+    entrypoint: /bin/sh
+    command:
+      - -c
+      - |
+        if [ -z "$RCLONE_CONTAINER" ]; then
+          echo "ERROR: RCLONE_CONTAINER is not set"
+          exit 1
+        fi
+
+        echo "Cleaning up existing contents of container..."
+        rclone delete chi_tacc:$RCLONE_CONTAINER --rmdirs || true
+
+        echo "Loading all data to object store..."
+        rclone copy /data chi_tacc:$RCLONE_CONTAINER \
+        --progress \
+        --transfers=32 \
+        --checkers=16 \
+        --multi-thread-streams=4 \
+        --fast-list
+
+        echo "Listing top-level directories in container after load:"
+        rclone lsd chi_tacc:$RCLONE_CONTAINER
+
+volumes:
+  mind:
