@@ -187,8 +187,6 @@ optional "difficulty" points you are attempting. -->
 - The relevant parts of the diagram: CI/CD Process, Staging, Canary
 - Justification: By treating infrastructure and configurations as immutable and storing all changes in Git, we enable reproducible deployments and automated promotion to staging/canary environments. This approach ensures robust, cloud-native deployments with minimal manual intervention.
 - Lectures Reference: Unit 3 (DevOps): cloud-native concepts, immutable infra, CI/CD, canary promotion
-
-
 - Specifics: Maintain separate staging, canary, and production environments with automatic rollback
 - Integration tests (e.g., smoke tests) in the CI pipeline for sanity checks on newly trained models
 - Difficulty Point: multi-environment deployment with canary testing and auto-promotion.
