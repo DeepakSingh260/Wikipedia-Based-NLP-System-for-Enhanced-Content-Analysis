@@ -605,6 +605,47 @@ def recommend_news_temporal(model, user_id, history, candidate_news_ids, news_fe
 
     return recommended_news
 
+def load_feedback_data(feedback_file_path, all_news_features):
+    logging.info(f"Loading feedback data from {feedback_file_path}")
+    
+    # Load feedback as behaviors
+    feedback_behaviors = pd.read_csv(
+        feedback_file_path,
+        sep="\t",
+        names=['impression_id', 'user_id', 'time', 'history', 'impressions']
+    )
+    
+    logging.info(f"Loaded {len(feedback_behaviors)} feedback behavior records")
+    
+    # Convert time strings to datetime objects
+    feedback_behaviors['timestamp'] = feedback_behaviors['time'].apply(parse_time)
+    
+    # Process impressions to get user-item interactions
+    feedback_interactions = process_impressions_with_time(feedback_behaviors)
+    
+    logging.info(f"Processed {len(feedback_interactions)} feedback interactions")
+    
+    # Verify that all news IDs in feedback exist in features dictionary
+    missing_news_ids = set()
+    for _, row in feedback_interactions.iterrows():
+        news_id = row['news_id']
+        if news_id not in all_news_features:
+            missing_news_ids.add(news_id)
+    
+    if missing_news_ids:
+        logging.warning(f"Found {len(missing_news_ids)} news IDs in feedback that are not in feature dictionary")
+        # Create placeholder features for missing news IDs
+        for news_id in missing_news_ids:
+            all_news_features[news_id] = {
+                'category': 'unknown',
+                'subcategory': 'unknown',
+                'title': f'Unknown Article {news_id}',
+                'abstract': ''
+            }
+        logging.info("Added placeholder features for missing news IDs")
+    
+    return feedback_interactions
+
 def main(args):
     # Setup dataset
     mlflow.pytorch.autolog()
@@ -652,15 +693,34 @@ def main(args):
     dev_news_features = extract_news_features(dev_news)
     test_news_features = extract_news_features(test_news)
 
+    # Combine news features
+    all_news_features = {**train_news_features, **dev_news_features, **test_news_features}
+
+    # Load feedback data if retraining flag is set
+    if args.retrain and args.feedback_path:
+        logging.info(f"Retraining mode enabled, loading feedback from: {args.feedback_path}")
+        feedback_interactions = load_feedback_data(args.feedback_path, all_news_features)
+        
+        if not feedback_interactions.empty:
+            # Combine feedback with training data for retraining
+            logging.info(f"Adding {len(feedback_interactions)} feedback interactions to training data")
+            # Sort by timestamp to maintain temporal order
+            combined_interactions = pd.concat([train_interactions, feedback_interactions])
+            train_interactions = combined_interactions.sort_values('timestamp').reset_index(drop=True)
+            logging.info(f"Combined training set size: {len(train_interactions)} interactions")
+            
+            # Log feedback integration metrics
+            mlflow.log_metric("feedback_interactions_count", len(feedback_interactions))
+            mlflow.log_metric("combined_training_size", len(train_interactions))
+        else:
+            logging.warning("No feedback data was loaded")
+            
     # Initialize tokenizer only on training data to avoid leakage
     logger.info("Building vocabulary from training data only...")
     train_titles = [news['title'] for news in train_news_features.values() if news['title']]
     tokenizer = TemporalTokenizer(max_vocab_size=args.vocab_size, min_freq=args.min_freq)
     tokenizer.fit(train_titles)
 
-    # For evaluation, we need to merge news features (but keep in mind when items were published)
-    # In a real system, we would track news publication dates
-    all_news_features = {**train_news_features, **dev_news_features, **test_news_features}
 
     # Create temporal datasets
     logger.info("Creating temporal datasets...")
@@ -737,19 +797,38 @@ def main(args):
         else:
             test_loader = None
 
-        # Initialize model
-        model = NewsRecommendationModel(
-            vocab_size=tokenizer.vocab_size,
-            embedding_dim=args.embedding_dim,
-            hidden_dim=args.hidden_dim,
-            learning_rate=args.learning_rate
-        )
+        if args.retrain and (args.initial_weights or args.checkpoint):
+            checkpoint_path = args.initial_weights or args.checkpoint
+            if os.path.exists(checkpoint_path):
+                logging.info(f"Retraining: Loading initial weights from {checkpoint_path}")
+                model = NewsRecommendationModel.load_from_checkpoint(checkpoint_path)
+                
+                # Optionally adjust learning rate for fine-tuning
+                model.learning_rate = args.learning_rate * 0.5  # Use a smaller learning rate for fine-tuning
+                logging.info(f"Using fine-tuning learning rate: {model.learning_rate}")
+            else:
+                logging.warning(f"Initial weights file not found at {checkpoint_path}, training from scratch")
+                model = NewsRecommendationModel(
+                    vocab_size=tokenizer.vocab_size,
+                    embedding_dim=args.embedding_dim,
+                    hidden_dim=args.hidden_dim,
+                    learning_rate=args.learning_rate
+                )
+        else:
+            # Initialize a new model
+            model = NewsRecommendationModel(
+                vocab_size=tokenizer.vocab_size,
+                embedding_dim=args.embedding_dim,
+                hidden_dim=args.hidden_dim,
+                learning_rate=args.learning_rate
+            )
 
         # Setup callbacks
+        model_name_prefix = "news-recommender-retrained" if args.retrain else "news-recommender"
         checkpoint_callback = ModelCheckpoint(
             monitor='val_auc',
             dirpath='checkpoints/',
-            filename='news-recommender-{epoch:02d}-{val_auc:.4f}',
+            filename=f'{model_name_prefix}-{{epoch:02d}}-{{val_auc:.4f}}',
             save_top_k=3,
             mode='max'
         )
@@ -761,6 +840,33 @@ def main(args):
             verbose=True,
             mode='max'
         )
+
+    # Add metadata about feedback data and retraining to MLflow
+    if args.retrain:
+        mlflow.log_param("retrain", True)
+        mlflow.log_param("feedback_path", args.feedback_path)
+        if args.initial_weights:
+            mlflow.log_param("initial_weights", args.initial_weights)
+        
+        # Log feedback data characteristics
+        if 'feedback_interactions' in locals() and not feedback_interactions.empty:
+            # Log user feedback statistics
+            user_count = feedback_interactions['user_id'].nunique()
+            news_count = feedback_interactions['news_id'].nunique()
+            positive_feedback = feedback_interactions[feedback_interactions['label'] == 1].shape[0]
+            negative_feedback = feedback_interactions[feedback_interactions['label'] == 0].shape[0]
+            
+            mlflow.log_metric("feedback_users_count", user_count)
+            mlflow.log_metric("feedback_news_count", news_count)
+            mlflow.log_metric("feedback_positive_count", positive_feedback)
+            mlflow.log_metric("feedback_negative_count", negative_feedback)
+            mlflow.log_metric("feedback_positive_ratio", positive_feedback / len(feedback_interactions))
+            
+            # Log feedback data summary
+            feedback_summary = feedback_interactions.describe().to_csv()
+            with open("feedback_summary.csv", "w") as f:
+                f.write(feedback_summary)
+            mlflow.log_artifact("feedback_summary.csv")
 
         # Setup logger
         tb_logger = TensorBoardLogger("lightning_logs", name="news_recommendation_temporal")
@@ -1071,6 +1177,9 @@ def parse_args_or_use_defaults():
             eval_only = False
             num_workers = 2
             checkpoint = None
+            retrain = False
+            feedback_path = None
+            initial_weights = None
 
         return Args()
     else:
@@ -1098,7 +1207,12 @@ def parse_args_or_use_defaults():
         parser.add_argument('--accumulate_grad_batches', type=int, default=1, help='Accumulate gradients over n batches')
         parser.add_argument('--eval_only', action='store_true', help='Only evaluate model')
         parser.add_argument('--num_workers', type=int, default=4, help='Number of data loading workers')
-        parser.add_argument('--checkpoint', type=str, default=None, help='Path to model checkpoint for evaluation')
+        
+        # Retraining parameters
+        parser.add_argument('--retrain', action='store_true', help='Enable retraining mode with feedback data')
+        parser.add_argument('--feedback_path', type=str, default=None, help='Path to processed feedback data')
+        parser.add_argument('--initial_weights', type=str, default=None, 
+                            help='Path to initial model weights for retraining (defaults to latest checkpoint if None)')
 
         return parser.parse_args()
 
