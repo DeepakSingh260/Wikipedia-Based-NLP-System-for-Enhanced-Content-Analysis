@@ -13,8 +13,8 @@ services:
       - |
         set -e
 
-        echo "Downloading MINDlarge_train.zip from NYU Box storage..."
-        curl -L "https://nyu.box.com/shared/static/s2kc1r7bqgvncd2uxdnj5tc42ffi2m3u.zip" -o MINDlarge_train.zip
+        echo "Downloading MINDlarge_train.zip from recodatasets..."
+        curl -L "https://recodatasets.z20.web.core.windows.net/newsrec/MINDlarge_train.zip" -o MINDlarge_train.zip
 
         if [ ! -s "MINDlarge_train.zip" ]; then
           echo "ERROR: Download failed for MINDlarge_train.zip - file is empty or does not exist"
@@ -23,8 +23,8 @@ services:
           echo "Successfully downloaded MINDlarge_train.zip"
         fi
 
-        echo "Downloading MINDlarge_dev.zip from NYU Box storage..."
-        curl -L "https://nyu.box.com/shared/static/qe4iwixr67kost4cqxeyk249q1dydf0k.zip" -o MINDlarge_dev.zip
+        echo "Downloading MINDlarge_dev.zip from recodatasets..."
+        curl -L "https://recodatasets.z20.web.core.windows.net/newsrec/MINDlarge_dev.zip" -o MINDlarge_dev.zip
 
         if [ ! -s "MINDlarge_dev.zip" ]; then
           echo "ERROR: Download failed for MINDlarge_dev.zip - file is empty or does not exist"
@@ -33,8 +33,8 @@ services:
           echo "Successfully downloaded MINDlarge_dev.zip"
         fi
 
-        echo "Downloading MINDlarge_test.zip from NYU Box storage..."
-        curl -L "https://nyu.box.com/shared/static/p8aebme8g0k5urbebwpsubrk6cpc7j0x.zip" -o MINDlarge_test.zip
+        echo "Downloading MINDlarge_test.zip from recodatasets..."
+        curl -L "https://recodatasets.z20.web.core.windows.net/newsrec/MINDlarge_test.zip" -o MINDlarge_test.zip
 
         if [ ! -s "MINDlarge_test.zip" ]; then
           echo "ERROR: Download failed for MINDlarge_test.zip - file is empty or does not exist"
