@@ -42,9 +42,9 @@ This ML-powered system offers significant value over the status quo by dynamical
 | Name                    | Responsible for                         | Link to their commits in this repo |
 |-------------------------|-----------------------------------------|------------------------------------|
 | Yash Darak              | Model training and training platforms   |                                    |
-| Aayush Agarwal          | Model serving and monitoring platforms  |                                    |
-| Srsuhti Shinde          | Data pipeline                           |                                    |
-| Deepak Singh            | Continuous X                            |                                    |
+| Deepak Singh            | Model serving and monitoring platforms  |                                    |
+| Aayush Agarwal          | Data pipeline                           |                                    |
+| Srushti Shinde          | Continuous X                            |                                    |
 
 
 ### System diagram
