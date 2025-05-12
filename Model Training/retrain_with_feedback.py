@@ -1,6 +1,3 @@
-#!/usr/bin/env python
-# retrain_with_feedback.py
-
 import os
 import argparse
 import logging
@@ -13,7 +10,6 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(
 logger = logging.getLogger(__name__)
 
 def setup_environment():
-    """Set up environment variables and paths"""
     # Set MLflow tracking URI if needed
     if 'MLFLOW_TRACKING_URI' not in os.environ:
         os.environ['MLFLOW_TRACKING_URI'] = "http://localhost:8000"
@@ -31,7 +27,6 @@ def setup_environment():
     return feedback_dir, model_dir
 
 def get_latest_model_checkpoint():
-    """Find the latest model checkpoint based on metrics in MLflow"""
     client = mlflow.tracking.MlflowClient()
     
     # Get the experiment ID for our news recommendation experiment

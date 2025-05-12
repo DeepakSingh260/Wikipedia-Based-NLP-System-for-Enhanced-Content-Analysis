@@ -20,48 +20,35 @@ import logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
+
 def setup_dataset(args):
     """
-    Setup the MIND dataset files
+    Setup the MIND dataset files (assumes files are already unzipped)
     """
-    os.makedirs('MIND_large/train', exist_ok=True)
-    os.makedirs('MIND_large/dev', exist_ok=True)
-    os.makedirs('MIND_large/test', exist_ok=True)
+    # Define the directory paths
+    train_dir = '/mnt/training'
+    dev_dir = '/mnt/validation'
+    test_dir = '/mnt/testing'
 
-    if not os.path.exists('MIND_large/train/behaviors.tsv'):
-        logger.info("Extracting MIND large training set...")
-        try:
-            with zipfile.ZipFile('/mnt/MINDlarge_train.zip') as zip_ref:
-                zip_ref.extractall('MIND_large/train')
-            logger.info("MIND large training set extracted.")
-        except zipfile.BadZipFile as e:
-            logger.error(f"Error: The training set file is not a valid ZIP: {e}")
-            return None
-
-    if not os.path.exists('MIND_large/dev/behaviors.tsv'):
-        logger.info("Extracting MIND large validation set...")
-        try:
-            with zipfile.ZipFile('/mnt/MINDlarge_dev.zip') as zip_ref:
-                zip_ref.extractall('MIND_large/dev')
-            logger.info("MIND large validation set extracted.")
-        except zipfile.BadZipFile as e:
-            logger.error(f"Error: The validation set file is not a valid ZIP: {e}")
-            return None
-
-    if not os.path.exists('MIND_large/test/behaviors.tsv'):
-        logger.info("Extracting MIND large test set...")
-        try:
-            with zipfile.ZipFile('/mnt/MINDlarge_test.zip') as zip_ref:
-                zip_ref.extractall('MIND_large/test')
-            logger.info("MIND large test set extracted.")
-        except zipfile.BadZipFile as e:
-            logger.error(f"Error: The test set file is not a valid ZIP: {e}")
-            return None
-
+    # Check if directories exist
+    if not os.path.exists(train_dir):
+        logger.error(f"Error: Training directory {train_dir} not found")
+        return None
+        
+    if not os.path.exists(dev_dir):
+        logger.error(f"Error: Validation directory {dev_dir} not found")
+        return None
+        
+    if not os.path.exists(test_dir):
+        logger.error(f"Error: Test directory {test_dir} not found")
+        return None
+    
+    logger.info("MIND dataset directories verified successfully.")
+    
     return {
-        'train_dir': 'MIND_large/train',
-        'dev_dir': 'MIND_large/dev',
-        'test_dir': 'MIND_large/test'
+        'train_dir': train_dir,
+        'dev_dir': dev_dir,
+        'test_dir': test_dir
     }
 
 def load_behaviors(file_path):
