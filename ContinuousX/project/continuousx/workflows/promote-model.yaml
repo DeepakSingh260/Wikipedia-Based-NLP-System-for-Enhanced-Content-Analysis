@@ -1,0 +1,134 @@
+apiVersion: argoproj.io/v1alpha1
+kind: WorkflowTemplate
+metadata:
+  name: promote-model
+spec:
+  entrypoint: promote-flow
+  arguments:
+    parameters:
+    - name: source-environment
+    - name: target-environment
+    - name: model-version
+
+  templates:
+  - name: promote-flow
+    steps:
+      - - name: retag-image
+          template: skopeo-retag
+          arguments:
+            parameters:
+            - name: source-environment
+              value: "{{workflow.parameters.source-environment}}"
+            - name: target-environment
+              value: "{{workflow.parameters.target-environment}}"
+            - name: model-version
+              value: "{{workflow.parameters.model-version}}"
+      - - name: deploy
+          template: trigger-deploy
+          arguments:
+            parameters:
+            - name: environment
+              value: "{{workflow.parameters.target-environment}}"
+            - name: model-version
+              value: "{{workflow.parameters.model-version}}"
+      - - name: update-mlflow-alias
+          template: set-mlflow-alias
+          arguments:
+            parameters:
+            - name: model-version
+              value: "{{workflow.parameters.model-version}}"
+            - name: alias
+              value: "{{workflow.parameters.target-environment}}"
+      - - name: verify-deployment
+          template: check-deployment-health
+          arguments:
+            parameters:
+            - name: environment
+              value: "{{workflow.parameters.target-environment}}"
+            - name: model-version
+              value: "{{workflow.parameters.model-version}}"
+
+  - name: skopeo-retag
+    inputs:
+      parameters:
+      - name: source-environment
+      - name: target-environment
+      - name: model-version
+    container:
+      image: quay.io/skopeo/stable
+      command: [sh, -c]
+      args:
+        - |
+          echo "Retagging news recommendation model from {{inputs.parameters.source-environment}} to {{inputs.parameters.target-environment}}..."
+          skopeo copy \
+            --src-tls-verify=false \
+            --dest-tls-verify=false \
+            docker://registry.kube-system.svc.cluster.local:5000/news-recommendation-app:{{inputs.parameters.source-environment}}-1.0.{{inputs.parameters.model-version}} \
+            docker://registry.kube-system.svc.cluster.local:5000/news-recommendation-app:{{inputs.parameters.target-environment}}-1.0.{{inputs.parameters.model-version}}
+          echo "Image retag completed successfully."
+
+  - name: set-mlflow-alias
+    inputs:
+      parameters:
+      - name: model-version
+      - name: alias
+    script:
+      image: python:3.11-slim
+      command: [sh, -c]
+      source: |
+        pip install mlflow-skinny > /dev/null
+        export MLFLOW_TRACKING_URI=http://mlflow.news-recommendation-platform.svc.cluster.local:8000
+        print(f"Setting MLflow model alias '{{{inputs.parameters.alias}}}' for version {{{inputs.parameters.model-version}}}")
+        python -c "import mlflow; client = mlflow.tracking.MlflowClient(); client.set_registered_model_alias(name='NewsRecommendationModel', alias='{{inputs.parameters.alias}}', version='{{inputs.parameters.model-version}}')"
+
+  - name: check-deployment-health
+    inputs:
+      parameters:
+      - name: environment
+      - name: model-version
+    container:
+      image: curlimages/curl:latest
+      command: [sh, -c]
+      args:
+        - |
+          echo "Verifying deployment health for {{inputs.parameters.environment}} environment..."
+          
+          # Wait for the service to be ready
+          MAX_RETRIES=10
+          COUNT=0
+          
+          while [ $COUNT -lt $MAX_RETRIES ]; do
+            if curl -s -o /dev/null -w "%{http_code}" http://news-recommendation-app.news-recommendation-{{inputs.parameters.environment}}.svc.cluster.local:8000/health | grep -q "200"; then
+              echo "Service is healthy!"
+              exit 0
+            else
+              echo "Service not ready yet. Attempt $((COUNT+1))/$MAX_RETRIES. Waiting 10 seconds..."
+              sleep 10
+              COUNT=$((COUNT+1))
+            fi
+          done
+          
+          echo "Service health check failed after $MAX_RETRIES attempts."
+          exit 1
+
+  - name: trigger-deploy
+    inputs:
+      parameters:
+      - name: model-version
+      - name: environment
+    resource:
+      action: create
+      manifest: |
+        apiVersion: argoproj.io/v1alpha1
+        kind: Workflow
+        metadata:
+          generateName: deploy-container-image-
+        spec:
+          workflowTemplateRef:
+            name: deploy-container-image
+          arguments:
+            parameters:
+            - name: environment
+              value: "{{inputs.parameters.environment}}"
+            - name: model-version
+              value: "{{inputs.parameters.model-version}}"
