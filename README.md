@@ -43,8 +43,8 @@ This ML-powered system offers significant value over the status quo by dynamical
 |-------------------------|-----------------------------------------|------------------------------------|
 | Yash Darak              | Model training and training platforms   | [Yash's commits](https://github.com/DeepakSingh260/Real-Time-News-Recommnedation-System/commits/main/?author=yashdarak9274)    |
 | Deepak Singh            | Model serving and monitoring platforms  | [Deepak's commits](https://github.com/DeepakSingh260/Real-Time-News-Recommnedation-System/commits/main/?author=DeepakSingh260) |
-| Aayush Agarwal          | Data pipeline                           | [Deepak's commits](https://github.com/DeepakSingh260/Real-Time-News-Recommnedation-System/commits/main/?author=phantom2810)    |
-| Srushti Shinde          | Continuous X                            | [Deepak's commits](https://github.com/DeepakSingh260/Real-Time-News-Recommnedation-System/commits/main/?author=srushs5699)     |
+| Aayush Agarwal          | Data pipeline                           | [Aayush's commits](https://github.com/DeepakSingh260/Real-Time-News-Recommnedation-System/commits/main/?author=phantom2810)    |
+| Srushti Shinde          | Continuous X                            | [Srushti's commits](https://github.com/DeepakSingh260/Real-Time-News-Recommnedation-System/commits/main/?author=srushs5699)     |
 
 
 ### System diagram
