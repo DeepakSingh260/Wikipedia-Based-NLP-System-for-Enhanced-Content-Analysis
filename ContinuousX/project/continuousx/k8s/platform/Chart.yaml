@@ -1,0 +1,4 @@
+apiVersion: v2
+name: newsrec-platform
+version: 1.0.0
+description: News Recommendation Platform Services

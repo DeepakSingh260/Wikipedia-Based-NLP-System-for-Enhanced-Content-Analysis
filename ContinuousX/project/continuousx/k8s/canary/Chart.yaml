@@ -1,0 +1,5 @@
+apiVersion: v2
+name: newsrec-canary
+version: 1.0.0
+description: News Recommendation System Canary Deployment
+
