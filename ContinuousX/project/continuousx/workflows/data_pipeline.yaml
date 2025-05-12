@@ -1,0 +1,407 @@
+apiVersion: argoproj.io/v1alpha1
+kind: WorkflowTemplate
+metadata:
+  name: data-pipeline
+spec:
+  entrypoint: data-pipeline-flow
+  arguments:
+    parameters:
+    - name: news-sources
+      default: '["bbc", "cnn", "reuters"]'
+    - name: content-max-age-days
+      default: "7"
+    - name: schedule-cron
+      default: "0 */4 * * *"  # Every 4 hours
+
+  templates:
+  - name: data-pipeline-flow
+    steps:
+      - - name: fetch-latest-news
+          template: fetch-news
+          arguments:
+            parameters:
+            - name: news-sources
+              value: "{{workflow.parameters.news-sources}}"
+      
+      - - name: preprocess-content
+          template: process-news
+      
+      - - name: extract-features
+          template: extract-features
+      
+      - - name: update-news-database
+          template: update-db
+      
+      - - name: prune-old-content
+          template: prune-content
+          arguments:
+            parameters:
+            - name: max-age-days
+              value: "{{workflow.parameters.content-max-age-days}}"
+
+  - name: fetch-news
+    inputs:
+      parameters:
+      - name: news-sources
+    container:
+      image: python:3.11-slim
+      command: [sh, -c]
+      args:
+        - |
+          echo "Installing required packages..."
+          pip install requests pandas beautifulsoup4 newsapi-python > /dev/null
+          
+          cat <<EOF > /tmp/fetch_news.py
+          import json
+          import os
+          import pandas as pd
+          from datetime import datetime, timedelta
+          from newsapi import NewsApiClient
+          
+          # Set up NewsAPI client
+          api_key = os.environ.get('NEWS_API_KEY', 'your-default-api-key')
+          newsapi = NewsApiClient(api_key=api_key)
+          
+          # Parse news sources
+          sources = json.loads('{{inputs.parameters.news-sources}}')
+          print(f"Fetching news from sources: {sources}")
+          
+          # Get top headlines
+          articles = []
+          for source in sources:
+              try:
+                  top_headlines = newsapi.get_top_headlines(sources=source, language='en', page_size=100)
+                  articles.extend(top_headlines['articles'])
+                  print(f"Fetched {len(top_headlines['articles'])} articles from {source}")
+              except Exception as e:
+                  print(f"Error fetching from {source}: {str(e)}")
+          
+          # Convert to DataFrame
+          if articles:
+              df = pd.DataFrame(articles)
+              df['fetched_at'] = datetime.now().isoformat()
+              
+              # Save to CSV
+              output_path = '/tmp/latest_news.csv'
+              df.to_csv(output_path, index=False)
+              print(f"Saved {len(df)} articles to {output_path}")
+          else:
+              print("No articles fetched!")
+          EOF
+          
+          # Set API key from Kubernetes secret
+          export NEWS_API_KEY=$(kubectl get secret news-api-credentials -n news-recommendation-system -o jsonpath="{.data.api-key}" | base64 --decode)
+          
+          # Run fetcher
+          echo "Fetching latest news..."
+          python /tmp/fetch_news.py
+          
+          # Copy data to shared volume
+          cp /tmp/latest_news.csv /mnt/data/latest_news.csv
+      volumeMounts:
+      - name: news-data
+        mountPath: /mnt/data
+
+- name: process-news
+    container:
+      image: python:3.11-slim
+      command: [sh, -c]
+      args:
+        - |
+          echo "Installing required packages..."
+          pip install pandas nltk scikit-learn > /dev/null
+          
+          cat <<EOF > /tmp/process_news.py
+          import pandas as pd
+          import nltk
+          import re
+          from nltk.corpus import stopwords
+          from nltk.stem import WordNetLemmatizer
+          
+          # Download NLTK resources
+          nltk.download('punkt', quiet=True)
+          nltk.download('stopwords', quiet=True)
+          nltk.download('wordnet', quiet=True)
+          
+          # Load data
+          print("Loading news data...")
+          df = pd.read_csv('/mnt/data/latest_news.csv')
+          
+          # Initialize lemmatizer and stopwords
+          lemmatizer = WordNetLemmatizer()
+          stop_words = set(stopwords.words('english'))
+          
+          def preprocess_text(text):
+              if pd.isna(text):
+                  return ""
+              # Convert to lowercase
+              text = text.lower()
+              # Remove special characters
+              text = re.sub(r'[^\w\s]', '', text)
+              # Tokenize
+              tokens = nltk.word_tokenize(text)
+              # Remove stopwords and lemmatize
+              tokens = [lemmatizer.lemmatize(word) for word in tokens if word not in stop_words]
+              return ' '.join(tokens)
+          
+          # Preprocess title and description
+          print("Preprocessing text...")
+          df['processed_title'] = df['title'].apply(preprocess_text)
+          df['processed_description'] = df['description'].apply(preprocess_text)
+          
+          # Extract publication date
+          df['pub_date'] = pd.to_datetime(df['publishedAt']).dt.strftime('%Y-%m-%d')
+          
+          # Save processed data
+          output_path = '/mnt/data/processed_news.csv'
+          df.to_csv(output_path, index=False)
+          print(f"Saved processed data to {output_path}")
+          EOF
+          
+          # Run processor
+          echo "Processing news data..."
+          python /tmp/process_news.py
+      volumeMounts:
+      - name: news-data
+        mountPath: /mnt/data
+
+  - name: extract-features
+    container:
+      image: python:3.11-slim
+      command: [sh, -c]
+      args:
+        - |
+          echo "Installing required packages..."
+          pip install pandas scikit-learn spacy sentence-transformers > /dev/null
+          
+          cat <<EOF > /tmp/extract_features.py
+          import pandas as pd
+          import numpy as np
+          from sentence_transformers import SentenceTransformer
+          import spacy
+          import json
+          
+          # Load processed data
+          print("Loading processed news data...")
+          df = pd.read_csv('/mnt/data/processed_news.csv')
+          
+          # Load models
+          print("Loading NLP models...")
+          model = SentenceTransformer('paraphrase-MiniLM-L6-v2')
+          nlp = spacy.load('en_core_web_sm', disable=['parser', 'ner'])
+          
+          # Extract title embeddings
+          print("Extracting embeddings...")
+          title_embeddings = model.encode(df['title'].fillna('').tolist())
+          
+          # Extract entities and categories
+          print("Extracting entities and topics...")
+          
+          def extract_entities(text):
+              if pd.isna(text):
+                  return []
+              doc = nlp(text)
+              return [token.text for token in doc if token.pos_ in ['PROPN', 'NOUN']]
+          
+          # Simple topic categorization
+          topics = ['politics', 'business', 'technology', 'health', 'entertainment', 'sports', 'science']
+          topic_keywords = {
+              'politics': ['government', 'president', 'minister', 'election', 'vote', 'political', 'democrat', 'republican'],
+              'business': ['economy', 'market', 'stock', 'company', 'investor', 'financial', 'trade', 'economic'],
+              'technology': ['tech', 'software', 'digital', 'computer', 'app', 'internet', 'cyber', 'AI', 'robot'],
+              'health': ['covid', 'virus', 'doctor', 'patient', 'hospital', 'medical', 'disease', 'treatment'],
+              'entertainment': ['movie', 'film', 'actor', 'actress', 'celebrity', 'music', 'star', 'award'],
+              'sports': ['team', 'player', 'game', 'win', 'match', 'tournament', 'championship', 'score'],
+              'science': ['research', 'study', 'scientist', 'discovery', 'space', 'planet', 'climate', 'physics']
+          }
+          
+          def categorize_text(text):
+              if pd.isna(text):
+                  return []
+              text = text.lower()
+              categories = []
+              for topic, keywords in topic_keywords.items():
+                  if any(keyword in text for keyword in keywords):
+                      categories.append(topic)
+              return categories if categories else ['general']
+          
+          # Extract features
+          df['entities'] = df['processed_title'] + ' ' + df['processed_description'].fillna('')
+          df['entities'] = df['entities'].apply(extract_entities)
+          df['categories'] = (df['title'].fillna('') + ' ' + df['description'].fillna('')).apply(categorize_text)
+          
+          # Store embeddings separately (as they're not easily stored in CSV)
+          np.save('/mnt/data/title_embeddings.npy', title_embeddings)
+          
+          # Save feature data
+          output_path = '/mnt/data/news_features.csv'
+          df.to_csv(output_path, index=False)
+          print(f"Saved feature data to {output_path}")
+          EOF
+          
+          # Download spaCy model
+          python -m spacy download en_core_web_sm
+          
+          # Run feature extraction
+          echo "Extracting features from news data..."
+          python /tmp/extract_features.py
+      volumeMounts:
+      - name: news-data
+        mountPath: /mnt/data
+
+  - name: update-db
+    container:
+      image: python:3.11-slim
+      command: [sh, -c]
+      args:
+        - |
+          echo "Installing required packages..."
+          pip install pandas pymongo > /dev/null
+          
+          cat <<EOF > /tmp/update_db.py
+          import pandas as pd
+          import numpy as np
+          import pymongo
+          import os
+          from datetime import datetime
+          
+          # Connect to MongoDB
+          mongo_uri = os.environ.get('MONGO_URI', 'mongodb://mongo.news-recommendation-platform:27017/')
+          client = pymongo.MongoClient(mongo_uri)
+          db = client['news_recommendation']
+          articles_collection = db['articles']
+          embeddings_collection = db['embeddings']
+          
+          # Load feature data
+          print("Loading feature data...")
+          df = pd.read_csv('/mnt/data/news_features.csv')
+          
+          # Load embeddings
+          embeddings = np.load('/mnt/data/title_embeddings.npy')
+          
+          # Prepare articles data
+          print("Preparing articles data...")
+          articles = []
+          for i, row in df.iterrows():
+              # Convert string representations of lists back to actual lists
+              entities = eval(row['entities']) if isinstance(row['entities'], str) else row['entities']
+              categories = eval(row['categories']) if isinstance(row['categories'], str) else row['categories']
+              
+              article = {
+                  'title': row['title'],
+                  'url': row['url'],
+                  'source': row['source.name'],
+                  'author': row['author'],
+                  'description': row['description'],
+                  'content': row['content'],
+                  'published_at': row['publishedAt'],
+                  'fetched_at': row['fetched_at'],
+                  'processed_title': row['processed_title'],
+                  'processed_description': row['processed_description'],
+                  'entities': entities,
+                  'categories': categories,
+                  'updated_at': datetime.now().isoformat()
+              }
+              articles.append(article)
+          
+          # Prepare embeddings data
+          print("Preparing embeddings data...")
+          embeddings_data = []
+          for i, row in df.iterrows():
+              embedding_doc = {
+                  'url': row['url'],
+                  'title_embedding': embeddings[i].tolist(),
+                  'updated_at': datetime.now().isoformat()
+              }
+              embeddings_data.append(embedding_doc)
+          
+          # Update database with upsert
+          print("Updating articles collection...")
+          for article in articles:
+              articles_collection.update_one(
+                  {'url': article['url']},
+                  {'$set': article},
+                  upsert=True
+              )
+          
+          print("Updating embeddings collection...")
+          for emb in embeddings_data:
+              embeddings_collection.update_one(
+                  {'url': emb['url']},
+                  {'$set': emb},
+                  upsert=True
+              )
+          
+          print(f"Database updated with {len(articles)} articles")
+          EOF
+          
+          # Set MongoDB URI from Kubernetes secret
+          export MONGO_URI=$(kubectl get secret mongodb-credentials -n news-recommendation-platform -o jsonpath="{.data.uri}" | base64 --decode)
+          
+          # Run database update
+          echo "Updating news database..."
+          python /tmp/update_db.py
+      volumeMounts:
+      - name: news-data
+        mountPath: /mnt/data
+
+  - name: prune-content
+    inputs:
+      parameters:
+      - name: max-age-days
+    container:
+      image: python:3.11-slim
+      command: [sh, -c]
+      args:
+        - |
+          echo "Installing required packages..."
+          pip install pymongo > /dev/null
+          
+          cat <<EOF > /tmp/prune_content.py
+          import pymongo
+          import os
+          from datetime import datetime, timedelta
+          
+          # Connect to MongoDB
+          mongo_uri = os.environ.get('MONGO_URI', 'mongodb://mongo.news-recommendation-platform:27017/')
+          client = pymongo.MongoClient(mongo_uri)
+          db = client['news_recommendation']
+          articles_collection = db['articles']
+          embeddings_collection = db['embeddings']
+          
+          # Calculate cutoff date
+          max_age_days = int('{{inputs.parameters.max-age-days}}')
+          cutoff_date = (datetime.now() - timedelta(days=max_age_days)).isoformat()
+          
+          print(f"Pruning content older than {max_age_days} days (before {cutoff_date})...")
+          
+          # Get URLs of old articles
+          old_articles = articles_collection.find({'published_at': {'$lt': cutoff_date}})
+          old_urls = [article['url'] for article in old_articles]
+          
+          if not old_urls:
+              print("No old content to prune.")
+              exit(0)
+              
+          print(f"Found {len(old_urls)} articles to prune")
+          
+          # Delete old articles
+          result = articles_collection.delete_many({'url': {'$in': old_urls}})
+          print(f"Deleted {result.deleted_count} articles")
+          
+          # Delete corresponding embeddings
+          result = embeddings_collection.delete_many({'url': {'$in': old_urls}})
+          print(f"Deleted {result.deleted_count} embeddings")
+          
+          print("Content pruning completed")
+          EOF
+          
+          # Set MongoDB URI from Kubernetes secret
+          export MONGO_URI=$(kubectl get secret mongodb-credentials -n news-recommendation-platform -o jsonpath="{.data.uri}" | base64 --decode)
+          
+          # Run pruning
+          echo "Pruning old news content..."
+          python /tmp/prune_content.py
+      volumeMounts:
+      - name: news-data
+        mountPath: /mnt/data

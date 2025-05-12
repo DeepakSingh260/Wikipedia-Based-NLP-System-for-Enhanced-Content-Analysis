@@ -1,0 +1,256 @@
+apiVersion: argoproj.io/v1alpha1
+kind: WorkflowTemplate
+metadata:
+  name: ab-test-model
+spec:
+  entrypoint: ab-test-flow
+  arguments:
+    parameters:
+    - name: model-a-version
+    - name: model-b-version
+    - name: test-duration-hours
+      default: "24"
+    - name: traffic-split-percentage
+      default: "50"  # Percentage of traffic to model B
+
+  templates:
+  - name: ab-test-flow
+    steps:
+      - - name: deploy-model-a
+          template: trigger-deploy
+          arguments:
+            parameters:
+            - name: environment
+              value: "production"
+            - name: model-version
+              value: "{{workflow.parameters.model-a-version}}"
+      
+      - - name: deploy-model-b
+          template: trigger-deploy
+          arguments:
+            parameters:
+            - name: environment
+              value: "canary"
+            - name: model-version
+              value: "{{workflow.parameters.model-b-version}}"
+      
+      - - name: configure-traffic-split
+          template: setup-traffic-split
+          arguments:
+            parameters:
+            - name: traffic-split-percentage
+              value: "{{workflow.parameters.traffic-split-percentage}}"
+      
+      - - name: wait-for-test-duration
+          template: sleep
+          arguments:
+            parameters:
+            - name: duration-hours
+              value: "{{workflow.parameters.test-duration-hours}}"
+      
+      - - name: collect-test-metrics
+          template: analyze-metrics
+          arguments:
+            parameters:
+            - name: model-a-version
+              value: "{{workflow.parameters.model-a-version}}"
+            - name: model-b-version
+              value: "{{workflow.parameters.model-b-version}}"
+      
+      - - name: cleanup-traffic-split
+          template: reset-traffic
+          when: "{{workflow.parameters.traffic-split-percentage}} != '0'"
+
+  - name: trigger-deploy
+    inputs:
+      parameters:
+      - name: model-version
+      - name: environment
+    resource:
+      action: create
+      manifest: |
+        apiVersion: argoproj.io/v1alpha1
+        kind: Workflow
+        metadata:
+          generateName: deploy-container-image-
+        spec:
+          workflowTemplateRef:
+            name: deploy-container-image
+          arguments:
+            parameters:
+            - name: environment
+              value: "{{inputs.parameters.environment}}"
+            - name: model-version
+              value: "{{inputs.parameters.model-version}}"
+
+  - name: setup-traffic-split
+    inputs:
+      parameters:
+      - name: traffic-split-percentage
+    container:
+      image: bitnami/kubectl:latest
+      command: [sh, -c]
+      args:
+        - |
+          cat <<EOF | kubectl apply -f -
+          apiVersion: networking.istio.io/v1alpha3
+          kind: VirtualService
+          metadata:
+            name: news-recommendation-vs
+            namespace: news-recommendation-system
+          spec:
+            hosts:
+            - "news-recommendation.example.com"
+            gateways:
+            - news-recommendation-gateway
+            http:
+            - route:
+              - destination:
+                  host: news-recommendation-app.news-recommendation-production.svc.cluster.local
+                  port:
+                    number: 80
+                weight: $((100 - {{inputs.parameters.traffic-split-percentage}}))
+              - destination:
+                  host: news-recommendation-app.news-recommendation-canary.svc.cluster.local
+                  port:
+                    number: 80
+                weight: {{inputs.parameters.traffic-split-percentage}}
+          EOF
+          
+          echo "Traffic split configured: {{inputs.parameters.traffic-split-percentage}}% to canary, $((100 - {{inputs.parameters.traffic-split-percentage}}))% to production"
+
+  - name: sleep
+    inputs:
+      parameters:
+      - name: duration-hours
+    container:
+      image: alpine:latest
+      command: [sh, -c]
+      args:
+        - |
+          echo "Starting A/B test for {{inputs.parameters.duration-hours}} hours"
+          sleep $(( {{inputs.parameters.duration-hours}} * 3600 ))
+          echo "A/B test duration completed"
+
+  - name: analyze-metrics
+    inputs:
+      parameters:
+      - name: model-a-version
+      - name: model-b-version
+    container:
+      image: python:3.11-slim
+      command: [sh, -c]
+      args:
+        - |
+          echo "Installing required packages..."
+          pip install prometheus-api-client pandas matplotlib > /dev/null
+          
+          cat <<EOF > /tmp/analyze.py
+          import pandas as pd
+          import matplotlib.pyplot as plt
+          from prometheus_api_client import PrometheusConnect
+          import json
+          import time
+          
+          # Connect to Prometheus
+          prom = PrometheusConnect(url='http://prometheus.news-recommendation-monitoring.svc.cluster.local:9090')
+          
+          # Fetch metrics for both models
+          def get_model_metrics(model_version, metric_name):
+              query = f'{metric_name}{{model_version="{model_version}"}}'
+              result = prom.custom_query(query)
+              return result
+              
+          # Get metrics
+          metrics = ['news_recommendation_click_rate', 'news_recommendation_dwell_time', 'news_recommendation_daily_active_users']
+          
+          model_a_version = "{{inputs.parameters.model-a-version}}"
+          model_b_version = "{{inputs.parameters.model-b-version}}"
+          
+          results = {
+              'model_a': {},
+              'model_b': {}
+          }
+          
+          for metric in metrics:
+              results['model_a'][metric] = get_model_metrics(model_a_version, metric)
+              results['model_b'][metric] = get_model_metrics(model_b_version, metric)
+          
+          # Calculate improvement percentages
+          improvements = {}
+          
+          # Output summary
+          summary = {
+              'model_a_version': model_a_version,
+              'model_b_version': model_b_version,
+              'metrics': {},
+              'recommendation': ''
+          }
+          
+          # Process each metric
+          for metric in metrics:
+              if results['model_a'][metric] and results['model_b'][metric]:
+                  a_value = float(results['model_a'][metric][0]['value'][1])
+                  b_value = float(results['model_b'][metric][0]['value'][1])
+                  
+                  change_pct = ((b_value - a_value) / a_value) * 100
+                  improvements[metric] = change_pct
+                  
+                  summary['metrics'][metric] = {
+                      'model_a': a_value,
+                      'model_b': b_value,
+                      'change_percentage': change_pct
+                  }
+          
+          # Make recommendation
+          positive_changes = sum(1 for v in improvements.values() if v > 0)
+          if positive_changes >= len(metrics) / 2:
+              summary['recommendation'] = f"PROMOTE: Model B (version {model_b_version}) shows improvements in {positive_changes}/{len(metrics)} metrics"
+          else:
+              summary['recommendation'] = f"KEEP: Model A (version {model_a_version}) still performs better overall"
+          
+          # Save to file
+          with open('/tmp/ab_test_results.json', 'w') as f:
+              json.dump(summary, f, indent=2)
+              
+          print(json.dumps(summary, indent=2))
+          EOF
+          
+          # Run analysis
+          echo "Analyzing A/B test metrics..."
+          python /tmp/analyze.py
+          
+          # Store results in ConfigMap
+          kubectl create configmap ab-test-results-$(date +%Y%m%d%H%M%S) \
+            --from-file=/tmp/ab_test_results.json \
+            -n news-recommendation-system || echo "Failed to create ConfigMap"
+            
+          echo "A/B test analysis completed and stored in ConfigMap"
+
+  - name: reset-traffic
+    container:
+      image: bitnami/kubectl:latest
+      command: [sh, -c]
+      args:
+        - |
+          cat <<EOF | kubectl apply -f -
+          apiVersion: networking.istio.io/v1alpha3
+          kind: VirtualService
+          metadata:
+            name: news-recommendation-vs
+            namespace: news-recommendation-system
+          spec:
+            hosts:
+            - "news-recommendation.example.com"
+            gateways:
+            - news-recommendation-gateway
+            http:
+            - route:
+              - destination:
+                  host: news-recommendation-app.news-recommendation-production.svc.cluster.local
+                  port:
+                    number: 80
+                weight: 100
+          EOF
+          
+          echo "Traffic reset to 100% production"
